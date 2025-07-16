@@ -26,8 +26,8 @@ This is a Telegram bot designed to assist users in purchasing car insurance. It 
 1. **Clone the repository:**
 
 ```bash
-git clone https://github.com/your-username/car-insurance-bot.git
-cd car-insurance-bot
+git clone https://github.com/NeGat1FF/InsuranceBot
+cd InsuranceBot
 ````
 
 2. **Copy a `.env.example` file, rename it to `.env` and provide required environment variables:**
