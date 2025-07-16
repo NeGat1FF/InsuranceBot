@@ -1,0 +1,4 @@
+dotenv==0.9.9
+python-telegram-bot==20.3
+openai==1.96.1
+mindee==4.24.0rc2
