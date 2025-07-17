@@ -1,11 +1,12 @@
 import logging
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     filters,
     ApplicationBuilder,
     ContextTypes,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
 )
 from services.mindee_api import process_passport, process_vehicle
 from services.openai_api import generate_response, generate_policy, confirm_details
@@ -13,8 +14,7 @@ from config import config
 
 
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
 PASSPORT_STATE = "Awaiting Passport Photo"
@@ -23,6 +23,9 @@ VEHICLE_STATE = "Awaiting Vehicle Registration Photo"
 VEHICLE_CONFIRMATION_STATE = "Awaiting Vehicle Registration Confirmation"
 PRICE_CONFIRMATION_STATE = "Awaiting Price Confirmation"
 FINISHED_STATE = "Finished"
+
+YES_BTN = InlineKeyboardButton("Yes", callback_data="yes_btn")
+NO_BTN = InlineKeyboardButton("No", callback_data="no_btn")
 
 welcome_message = """👋 Hello! I'm your assistant for purchasing car insurance.
 
@@ -42,13 +45,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("state") != PASSPORT_STATE and context.user_data.get("state") != VEHICLE_STATE:
+    if (
+        context.user_data.get("state") != PASSPORT_STATE
+        and context.user_data.get("state") != VEHICLE_STATE
+    ):
         response = await generate_response(
             f"User sent a photo, but the bot is not in a state to process it. Current state: {context.user_data.get('state')}"
         )
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id, text=response
-        )
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=response)
         return
     doc_info = update.message.document
     if not doc_info:
@@ -71,39 +75,64 @@ async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e2:
             response = f"An error occurred while processing your document: {e2}. Please try again"
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id, text=response
-        )
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=response)
         return
     try:
         response = await generate_response(
-        f"Extracted details: {result}. Ask user to confirm if they are correct."
-    )
+            f"Extracted details: {result}. Ask user to confirm if they are correct."
+        )
     except Exception as e:
-        response = f"An error occurred while generating the response: {e}. Please try again."
+        response = (
+            f"An error occurred while generating the response: {e}. Please try again."
+        )
     if context.user_data.get("state") == PASSPORT_STATE:
         context.user_data["state"] = PASSPORT_CONFIRMATION_STATE
     elif context.user_data.get("state") == VEHICLE_STATE:
         context.user_data["state"] = VEHICLE_CONFIRMATION_STATE
     context.user_data["confirmation_prompt"] = response
     await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=response,
-    )
+            chat_id=update.effective_chat.id,
+            text=response,
+            reply_markup=InlineKeyboardMarkup([[YES_BTN, NO_BTN]]),
+        )
 
 
-async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_states(update, context, query=None):
     try:
+        if update.message:
+            user_input = update.message.text
+        elif update.callback_query:
+            user_input = update.callback_query.data
+        else:
+            user_input = ""
+
+        if query:
+            chat_id = query.message.chat.id
+        else:
+            chat_id = update.effective_chat.id
+
         state = context.user_data.get("state")
-        if state in [PASSPORT_CONFIRMATION_STATE, VEHICLE_CONFIRMATION_STATE, PRICE_CONFIRMATION_STATE]:
-            try:
-                confirmation = await confirm_details(f"Confirmation prompt: {context.user_data.get('confirmation_prompt')}\nUser response: {update.message.text}")
-            except Exception as e:
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text="Couldn't interpret your reply. Please respond clearly.",
-                )
-                return
+        if state in [
+            PASSPORT_CONFIRMATION_STATE,
+            VEHICLE_CONFIRMATION_STATE,
+            PRICE_CONFIRMATION_STATE,
+        ]:
+            if query:
+                if query.data == "yes_btn":
+                    confirmation = "confirmed"
+                else:
+                    confirmation = "rejected"
+            else:
+                try:
+                    confirmation = await confirm_details(
+                        f"Confirmation prompt: {context.user_data.get('confirmation_prompt')}\nUser response: {user_input}"
+                    )
+                except Exception as e:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text="Couldn't interpret your reply. Please respond clearly.",
+                    )
+                    return
 
             print(f"Confirmation received: {confirmation}")
             if confirmation == "confirmed":
@@ -114,12 +143,12 @@ async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             f"Passport details confirmed. Now ask the user to send a clear photo of their vehicle registration document. CURRENT STATE: {context.user_data.get('state')}"
                         )
                         await context.bot.send_message(
-                            chat_id=update.effective_chat.id,
+                            chat_id=chat_id,
                             text=response,
                         )
                     except Exception:
                         await context.bot.send_message(
-                            chat_id=update.effective_chat.id,
+                            chat_id=chat_id,
                             text="Something went wrong while generating the next instruction.",
                         )
 
@@ -130,12 +159,13 @@ async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             f"Vehicle details confirmed. Now inform the user that the insurance price is fixed at 100 USD and ask them to confirm if they want to proceed with the purchase. CURRENT STATE: {context.user_data.get('state')}"
                         )
                         await context.bot.send_message(
-                            chat_id=update.effective_chat.id,
+                            chat_id=chat_id,
                             text=response,
+                            reply_markup=InlineKeyboardMarkup([[YES_BTN, NO_BTN]]),
                         )
                     except Exception:
                         await context.bot.send_message(
-                            chat_id=update.effective_chat.id,
+                            chat_id=chat_id,
                             text="Failed to generate the next step. Please try again.",
                         )
 
@@ -146,12 +176,12 @@ async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             f"User confirmed the price. Confirm proceeding with insurance policy. It will be ready in few seconds. CURRENT STATE: {context.user_data.get('state')}"
                         )
                         await context.bot.send_message(
-                            chat_id=update.effective_chat.id,
+                            chat_id=chat_id,
                             text=response,
                         )
                     except Exception:
                         await context.bot.send_message(
-                            chat_id=update.effective_chat.id,
+                            chat_id=chat_id,
                             text="Couldn't continue after price confirmation. Try again later.",
                         )
                         return
@@ -162,15 +192,14 @@ async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             context.user_data.get("vehicle_data"),
                         )
                         await context.bot.send_message(
-                            chat_id=update.effective_chat.id,
+                            chat_id=chat_id,
                             text=f"Your insurance policy has been generated:\n{policy}",
                         )
                     except Exception:
                         await context.bot.send_message(
-                            chat_id=update.effective_chat.id,
+                            chat_id=chat_id,
                             text="Failed to generate your policy. Please try again later.",
                         )
-
             else:
                 # Rejection flow
                 try:
@@ -189,28 +218,35 @@ async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             f"User rejected the price. Inform them that the price is fixed at 100 USD and cannot be changed. CURRENT STATE: {context.user_data.get('state')}"
                         )
                     await context.bot.send_message(
-                        chat_id=update.effective_chat.id,
+                        chat_id=chat_id,
                         text=response,
                     )
                 except Exception:
                     await context.bot.send_message(
-                        chat_id=update.effective_chat.id,
+                        chat_id=chat_id,
                         text="Something went wrong processing your answer. Please try again.",
                     )
         else:
-            response = await generate_response(
-                f"{update.message.text}. Current state: {state}."
-            )
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id, text=response
-            )
+            response = await generate_response(f"{user_input}. Current state: {state}.")
+            await context.bot.send_message(chat_id=chat_id, text=response)
     except Exception as e:
         await context.bot.send_message(
-            chat_id=update.effective_chat.id,
+            chat_id=chat_id,
             text="An unexpected error occurred. Please try again later.",
         )
         print(f"Exception in text handler: {e}")
 
+
+async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print(f"Received text: {update.message.text}")
+    await handle_states(update, context)
+
+
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print(f"Received button callback: {update.callback_query.data}")
+    query = update.callback_query
+    await query.answer()  # Acknowledge the callback query
+    await handle_states(update, context, query)
 
 
 if __name__ == "__main__":
@@ -218,7 +254,10 @@ if __name__ == "__main__":
     start_handler = CommandHandler("start", start)
     photo_handler = MessageHandler(filters=filters.ATTACHMENT, callback=photo)
     text_handler = MessageHandler(filters=filters.TEXT, callback=text)
-  
-    application.add_handlers([start_handler, photo_handler, text_handler])
+    button_handler = CallbackQueryHandler(button)
+
+    application.add_handlers(
+        [start_handler, photo_handler, text_handler, button_handler]
+    )
 
     application.run_polling()
